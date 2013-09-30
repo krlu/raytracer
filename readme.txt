@@ -1,8 +1,13 @@
+Guidelines for Compiling and running code. 
 
-Describe the required features you have implemented, and which you have not.
-if you have missing features, be sure to explain how much you accomplished.
-Describe any major design decisions and descriptions of your algorithms.
-You should detail anything you think we need to know to understand your code.
+Make sure you have necessary dependencies installed. 
+( Must run on Redhat linux Operating system )
+
+Compile by running make, be sure to run make clean to clear any cached binaries
+Then run ./raytracer with the executable that appears upon completed compiliation.
+
+
+
 
 General algorithm for raytracer: 
 
