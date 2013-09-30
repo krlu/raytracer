@@ -1,0 +1,246 @@
+/**
+ * @file sphere.cpp
+ * @brief Function defnitions for the Sphere class.
+ *
+ * @author Kristin Siu (kasiu)
+ * @author Eric Butler (edbutler)
+ */
+
+#include "scene/sphere.hpp"
+#include "application/opengl.hpp"
+#include "scene/scene.hpp"
+
+namespace _462 {
+
+#define SPHERE_NUM_LAT 80
+#define SPHERE_NUM_LON 100
+
+#define SPHERE_NUM_VERTICES ( ( SPHERE_NUM_LAT + 1 ) * ( SPHERE_NUM_LON + 1 ) )
+#define SPHERE_NUM_INDICES ( 6 * SPHERE_NUM_LAT * SPHERE_NUM_LON )
+// index of the x,y sphere where x is lat and y is lon
+#define SINDEX(x,y) ((x) * (SPHERE_NUM_LON + 1) + (y))
+#define VERTEX_SIZE 8
+#define TCOORD_OFFSET 0
+#define NORMAL_OFFSET 2
+#define VERTEX_OFFSET 5
+
+real_t time;
+Vector3 eye; 
+Vector3 direction;
+
+static unsigned int Indices[SPHERE_NUM_INDICES];
+static float Vertices[VERTEX_SIZE * SPHERE_NUM_VERTICES];
+
+static void init_sphere()
+{
+    static bool initialized = false;
+    if ( initialized )
+        return;
+
+    for ( int i = 0; i <= SPHERE_NUM_LAT; i++ ) {
+        for ( int j = 0; j <= SPHERE_NUM_LON; j++ ) {
+            real_t lat = real_t( i ) / SPHERE_NUM_LAT;
+            real_t lon = real_t( j ) / SPHERE_NUM_LON;
+            float* vptr = &Vertices[VERTEX_SIZE * SINDEX(i,j)];
+
+            vptr[TCOORD_OFFSET + 0] = lon;
+            vptr[TCOORD_OFFSET + 1] = 1-lat;
+
+            lat *= PI;
+            lon *= 2 * PI;
+            real_t sinlat = sin( lat );
+
+            vptr[NORMAL_OFFSET + 0] = vptr[VERTEX_OFFSET + 0] = sinlat * sin( lon );
+            vptr[NORMAL_OFFSET + 1] = vptr[VERTEX_OFFSET + 1] = cos( lat ),
+            vptr[NORMAL_OFFSET + 2] = vptr[VERTEX_OFFSET + 2] = sinlat * cos( lon );
+        }
+    }
+
+    for ( int i = 0; i < SPHERE_NUM_LAT; i++ ) {
+        for ( int j = 0; j < SPHERE_NUM_LON; j++ ) {
+            unsigned int* iptr = &Indices[6 * ( SPHERE_NUM_LON * i + j )];
+
+            unsigned int i00 = SINDEX(i,  j  );
+            unsigned int i10 = SINDEX(i+1,j  );
+            unsigned int i11 = SINDEX(i+1,j+1);
+            unsigned int i01 = SINDEX(i,  j+1);
+
+            iptr[0] = i00;
+            iptr[1] = i10;
+            iptr[2] = i11;
+            iptr[3] = i11;
+            iptr[4] = i01;
+            iptr[5] = i00;
+        }
+    }
+
+    initialized = true;
+}
+
+Sphere::Sphere()
+    : radius(0), material(0) {}
+
+Sphere::~Sphere() {}
+
+void Sphere::render() const
+{
+    // create geometry if we haven't already
+    init_sphere();
+
+    if ( material )
+        material->set_gl_state();
+
+    // just scale by radius and draw unit sphere
+    glPushMatrix();
+    glScaled( radius, radius, radius );
+    glInterleavedArrays( GL_T2F_N3F_V3F, VERTEX_SIZE * sizeof Vertices[0], Vertices );
+    glDrawElements( GL_TRIANGLES, SPHERE_NUM_INDICES, GL_UNSIGNED_INT, Indices );
+    glPopMatrix();
+
+    if ( material )
+        material->reset_gl_state();
+}
+
+
+/* transformation helper functions 
+ * creates a transformation matrix 
+ * and invokes different transformation 
+ * functions for points and vectors
+ * */
+Vector3 Sphere::transform_vector(const Vector3 &v) const {
+	//create a transformation matrix for instancing 
+	Matrix4 inv_trans; 
+	make_inverse_transformation_matrix(&inv_trans, position, orientation, scale);
+	return inv_trans.transform_vector(v);
+}
+
+Vector3 Sphere::transform_point(const Vector3 &p) const {
+	Matrix4 inv_trans; 
+	make_inverse_transformation_matrix(&inv_trans, position, orientation, scale);
+	return inv_trans.transform_point(p);
+}
+
+
+/* static helper function for computing diffuse
+ */
+real_t max_of(real_t a, real_t b)
+{
+	if(a > b)
+		return a; 
+	else
+		return b;
+}
+
+/* computes the attenuation factor of a light source 
+ * based on its distance from the surface point 
+ * */
+Color3 attenuation(real_t dist, PointLight light, Vector3 light_pos, Vector3 surface_pos){
+	real_t constant = light.attenuation.constant;
+	real_t lin = light.attenuation.linear;
+	real_t quad = light.attenuation.quadratic;
+	return light.color*(1.0/(constant + lin*dist + quad*pow(dist,2)));
+}
+
+/* utilizes the summation formula for computing the diffuse color
+ * */ 
+Color3 Sphere::compute_diffuse(const Scene* scene, Vector3 normal, Vector3 surface_pos) const {
+
+	Color3 total_diff = Color3(0,0,0);
+	int num_lights = scene->num_lights();
+	const PointLight* lights = scene->get_lights();
+	// iterate throught all lights in the scene
+	for(int i=0;i<num_lights;i++){
+		Vector3 light_pos = transform_point(lights[i].position);
+		Vector3 light_vector = normalize(light_pos - surface_pos);
+		real_t dist = distance(light_pos,surface_pos);
+
+		Color3 atten = attenuation(dist,lights[i], light_pos,surface_pos);	
+		total_diff = total_diff + atten*max_of(dot(light_vector,normal),0); 		  	 
+	}
+	return total_diff;	
+}
+
+/* Returns the color at the given pixel 
+ * by computing the sum of all diffuse lights and ambient light 
+ */
+Color3 Sphere::color_at_pixel(const Scene *scene, int x, int y, const Vector3 &surface_pos) const 
+{
+
+	const Color3 &diffuse =  material->diffuse;
+	const Color3 &specular = material->specular;
+	const Color3 &ambient =  material->ambient;
+	const Vector3 &center = transform_point(position); 
+//	Vector3 surface_pos = eye + time*direction;
+
+	// compute the normal vector with respect to the surface position
+	Vector3 normal = normalize((surface_pos - center)/radius);         
+//	Color3 texture_color = material->get_texture_pixel(x,y);	
+	return (scene->ambient_light)*ambient + diffuse*compute_diffuse(scene,normal,surface_pos);
+}
+
+
+/* Checks for solutions to the following equation:
+ * (e + td - c)*(e + td - c) - R^2 = 0 
+ * which is a quadratic for t and thus we only need check
+ * if the discriminant: 
+ * (d*(e-c)^2 - (d*d)((e-c)*(e-c) - R^2) >= 0 
+ * NOTE: * notation indicates dot product in the context of 
+ * this documentation, we call dot(x,y)  to represent the 
+ * dot product of vectors x and y 
+ *  s is the directional vector, e is the camera eye starting point 
+ *  */
+real_t Sphere::is_intersecting(Vector3 &s, Vector3 &e, real_t *T) const
+{
+	Vector3 D = s-e; // the viewing ray 
+
+	// transform the viewing ray, the eye, and the center of the sphere 
+	// center of sphere is the position of geometry here
+	const Vector3 &E = transform_point(e);
+	const Vector3 &d = transform_vector(D);
+	const Vector3 &c = transform_point(position);
+
+	Vector3 ec = E-c;
+	real_t product_ec = dot(ec,ec);
+	real_t product_dd = dot(d,d); 
+	real_t discriminant = dot(d,ec)*dot(d,ec) - product_dd*(product_ec - radius*radius);
+       
+	//pass values into global variables for color computation 
+	//later in the program
+ 	eye = E;
+	direction = d; 		
+	if (discriminant >= 0){
+		// using a variant of the quadratic formula to find values for T 
+		// we take the minimum of T1,T2 or just T1 when T2 is negative
+		real_t T1 = (dot(-d, ec) + sqrt(discriminant))/product_dd; 	
+		real_t T2 = (dot(-d, ec) - sqrt(discriminant))/product_dd;
+		if(T1 <= 0) 
+			return 0;  	
+		if(T2 <= 0) 
+			*T = T1;
+		else
+			*T = T2; 
+		time = *T; //passing values to global variables
+		return 1.0; 
+	}
+	else
+		return 0.0;	 
+}
+
+} /* _462 */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
